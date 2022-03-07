@@ -2,7 +2,9 @@ import datetime
 import os
 import re
 import time
+import urllib
 from difflib import SequenceMatcher
+import pprint
 
 import certifi
 import requests
@@ -128,7 +130,9 @@ class SportScannerAgent(Agent.TV_Shows):
 
     def search(self, results, media, lang, manual):
         # Get all leagues defined in thesportsdb and match this one
-        Log("Lex: Printing Media {0}".format(media))
+        media_file_name = os.path.basename(urllib.unquote(urllib.unquote(media.filename)))
+        Log("Lex: Printing Media File Name {0}".format(media_file_name))
+        Log("Lex: Printing Media Class {0}".format(pprint.pformat(media)))
         show_title = media.show
         Log("SS: Attempting to match {0}".format(show_title))
         url = "{0}all_leagues.php".format(SPORTSDB_API)
