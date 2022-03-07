@@ -298,8 +298,7 @@ class SportScannerAgent(Agent.TV_Shows):
                             url = "{0}searchfilename.php?e={1}".format(SPORTSDB_API, filename)
                             results = JSON.ObjectFromString(get_result_from_network(url, True))
                             matched_episode = results['event'][0]
-                            Log("SS: Matched {0} using filename search".format(
-                                matched_episode['strEvent']))
+                            Log("SS: Matched {0} using filename search".format(matched_episode['strEvent']))
                         except:
                             pass
 
@@ -315,8 +314,7 @@ class SportScannerAgent(Agent.TV_Shows):
                                                                         episode_media.title)
                                 # Replace all whitespaces with '_'
                                 bastard_filename = re.sub(r'\s+', '_', bastard_filename)
-                                url = "{0}searchfilename.php?e={1}".format(
-                                    SPORTSDB_API, bastard_filename)
+                                url = "{0}searchfilename.php?e={1}".format(SPORTSDB_API, bastard_filename)
                                 results = JSON.ObjectFromString(get_result_from_network(url, True))
                                 matched_episode = results['event'][0]
                                 Log("SS: Matched {0} using filename search".format(
@@ -369,7 +367,8 @@ class SportScannerAgent(Agent.TV_Shows):
                                                     closeness, bastard_title))
 
                                             Log("SS: Match ratio of {0} between {1} and {2}".format(
-                                                closeness, episode_media.title,
+                                                closeness,
+                                                episode_media.title,
                                                 day_events['events'][current_event]['strEvent']))
                                             # If they are a perfect match then we are done
                                             if closeness == 1:
