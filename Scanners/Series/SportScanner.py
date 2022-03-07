@@ -1,22 +1,23 @@
+# coding=utf-8
 #
 # Most code here is copyright (c) 2010 Plex Development Team. All rights reserved.
 #
 
-import re
+import logging
 import os
 import os.path
-import logging
+import re
+
 import Media
-import VideoFiles
 import Stack
 import Utils
+import VideoFiles
 
 regex_all_in_file_name = [
     r'(?P<show>.*?)[^0-9a-zA-Z]+(?P<year>[0-9]{4})[^0-9a-zA-Z]+'
     r'(?P<month>[0-9]{2})[^0-9a-zA-Z]+(?P<day>[0-9]{2})[^0-9a-zA-Z]+(?P<title>.*)$',
     r'^(?P<show>.*?)-(?P<season>[0-9]{4}).*-([0-9a-zA-z]+-)'
-    r'(?P<year>[0-9]{4})(?P<month>[0-9]{2})(?P<day>[0-9]{2})'
-    r'[-_](?P<title>.*?)(_ALT)?$'
+    r'(?P<year>[0-9]{4})(?P<month>[0-9]{2})(?P<day>[0-9]{2})[-_](?P<title>.*?)(_ALT)?$'
 ]
 
 regex_date_title_file_name = [
@@ -29,6 +30,9 @@ regex_title_file_name = [
 
 
 def set_logging():
+    """
+    Creating a logger because I have no idea where I can see the print statements and this should help with debugging
+    """
     cache_path = os.path.join(
         os.environ['LOCALAPPDATA'], 'Plex Media Server', 'Logs', 'Sports Scanner Logs')
     if not os.path.exists(cache_path):
@@ -39,17 +43,18 @@ def set_logging():
     # Bypass DOS path MAX_PATH limitation
     # (260 Bytes=> 32760 Bytes, 255 Bytes per folder unless UDF 127B ytes max)
     if os.sep == "\\":
-        dos_path = os.path.abspath(log_file) if isinstance(log_file, unicode) else os.path.abspath(log_file.decode('utf-8'))
+        log_file_utf8 = log_file.decode('utf-8')
+        dos_path = os.path.abspath(log_file) if isinstance(log_file, unicode) else os.path.abspath(log_file_utf8)
         log_file = u"\\\\?\\UNC\\" + dos_path[2:] if dos_path.startswith(u"\\\\") else u"\\\\?\\" + dos_path
 
-    global logger
     logger = logging.getLogger('main')
-    #if not mode:  mode = 'a' if os.path.exists(log_file) and os.stat(log_file).st_mtime + 3600 > time.time()
+    # if not mode:  mode = 'a' if os.path.exists(log_file) and os.stat(log_file).st_mtime + 3600 > time.time()
     # else 'w' # Override mode for repeat manual scans or immediate rescans
     file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
     file_handler.setFormatter(logging.Formatter('%(asctime)-15s %(levelname)s - %(message)s'))
     file_handler.setLevel(logging.INFO)
     logger.addHandler(file_handler)
+    return logger
 
 
 def get_additional_metadata_for_sub_episode(clean_files, file_name, logger):
@@ -72,57 +77,61 @@ def get_additional_metadata_for_sub_episode(clean_files, file_name, logger):
     return additional_metadata_sub_episode
 
 
-def Scan(path, files, mediaList, subdirs):
+def generate_episode_hash(year, month, day, file_hash, sub):
+    if not re.match(r'^[0-9]{4}$', year):
+        raise ValueError("Incorrectly formatted year. Must be 4 char str: {0}".format(year))
+
+    if int(year) > 2021:
+        if sub < 0:
+            episode_hash = int('%s%02d%02d%03d' % (year[-2:], month, day, file_hash % (10 ** 3)))
+        else:
+            episode_hash = int('%s%02d%02d%03d' % (year[-2:], month, day, sub))
+    else:
+        if sub < 0:
+            episode_hash = int('%s%02d%02d%04d' % (year[-2:], month, day, file_hash % (10 ** 4)))
+        else:
+            episode_hash = int('%s%02d%02d%04d' % (year[-2:], month, day, sub))
+    return episode_hash
+
+
+def Scan(path, files, mediaList, subdirs, language=None, root=None):
     """Look for episodes."""
-    set_logging()
-    logger.warning("SS: Starting scan")
+    logger = set_logging()
+    # INFO: Using Warning because anything lower did not show up in the logs¯\_(ツ)_/¯
+    logger.warning("SS: Starting Scan")
     # logger.warning("SS: path | {} |".format(path))
     # logger.warning("SS: files | {} |".format(files))
     # logger.warning("SS: subdirs | {} |".format(subdirs))
 
     # Scan for video files.
-    VideoFiles.Scan(path, files, mediaList, subdirs)
+    VideoFiles.Scan(path, files, mediaList, subdirs, root)
 
     logger.warning("SS: Video files | {} |".format(files))
     logger.warning("SS: Video subdirs | {} |".format(subdirs))
-
-
-    def NumberEpisode(year,month,day,filehash,sub):
-        if not re.match(r"^[0-9]{4}$",year):
-	    raise ValueError("Incorrectly formatted year. Must be 4 char str: {0}".format(year))
-
-        if int(year) > 2021:
-            if sub < 0:
-                ep = int('%s%02d%02d%03d' % (year[-2:],month, day, filehash % (10 ** 3)))
-            else:
-                ep = int('%s%02d%02d%03d' % (year[-2:],month, day, sub))
-        else:
-            if sub < 0:
-                ep = int('%s%02d%02d%04d' % (year[-2:],month, day, filehash % (10 ** 4)))
-            else:
-                ep = int('%s%02d%02d%04d' % (year[-2:],month, day, sub))
-        return ep
 
     # Here we have only video files in files, path is only the TLD, media is empty, subdirs is populated
     # No files here? Then what are we doing!
     clean_files = dict()
     if len(files) == 0:
         return
-    library_name_as_sport = None
+    directories_checked = False
+    library_name_as_league = None
     show_name_as_year = None
     season_name_as_event = None
     for file_path in files:
         logger.warning("Lex: File Path | {}".format(file_path))
-        if not library_name_as_sport:
-            event_file_path = os.path.dirname(file_path)
-            season_name_as_event = os.path.basename(event_file_path)
-            logger.warning("Lex: Season Name as Event | {}".format(season_name_as_event))
-            year_file_path = os.path.dirname(event_file_path)
-            show_name_as_year = os.path.basename(year_file_path)
+        if not directories_checked:
+            event_directory_path = os.path.dirname(file_path)
+            show_file_path = os.path.dirname(event_directory_path)
+            library_file_path = os.path.dirname(show_file_path)
+            show_name_as_year = os.path.basename(show_file_path)
             logger.warning("Lex: Show Name as Year | {}".format(show_name_as_year))
-            library_file_path = os.path.dirname(year_file_path)
-            library_name_as_sport = os.path.basename(library_file_path)
-            logger.warning("Lex: Library Name as Sport | {}".format(library_name_as_sport))
+            if re.match(r'^[0-9]{4}$', show_name_as_year):
+                season_name_as_event = os.path.basename(event_directory_path)
+                logger.warning("Lex: Season Name as Event | {}".format(season_name_as_event))
+                library_name_as_league = os.path.basename(library_file_path)
+                logger.warning("Lex: Library Name as Sport | {}".format(library_name_as_league))
+            directories_checked = True
         file_name = os.path.basename(file_path)
         logger.warning("Lex: File Name | {}".format(file_name))
         (file_name, ext) = os.path.splitext(file_name)
@@ -141,7 +150,7 @@ def Scan(path, files, mediaList, subdirs):
 
     paths = Utils.SplitPath(path)
 
-    if len(paths) == 1 and len(paths[0]) == 0 or len(path) == 0 :
+    if len(paths) == 1 and len(paths[0]) == 0 or len(path) == 0:
         # This is just a load of files dumped in the root directory
         # - we can't deal with this properly
         logger.warning("SS: In TLD, no files here can be scanned")
@@ -168,7 +177,7 @@ def Scan(path, files, mediaList, subdirs):
                     else:
                         season = year
 
-                    filename = "{0}{1}SportScanner.txt".format(os.path.dirname(clean_files[file]),os.path.sep)
+                    filename = "{0}{1}SportScanner.txt".format(os.path.dirname(clean_files[file]), os.path.sep)
                     logger.warning("SS: FileName: {0}".format(filename))
 
                     # Check to see if a .SportScanner file_name exists, then read in the contents
@@ -177,14 +186,16 @@ def Scan(path, files, mediaList, subdirs):
                         fd = os.open(filename, os.O_RDONLY)
                         file_contents = os.read(fd, size)
                         # logger.warning("SS: FileContents: {0}".format(file_contents))
-                        season_match = re.search('(?P<season>XX..)',file_contents, re.IGNORECASE)
+                        season_match = re.search(r'(?P<season>XX..)', file_contents, re.IGNORECASE)
                         if season_match:
                             season_format = season_match.group('season').lower()
-                            logger.warning("SS: Using {0} season format for {1}".format(season_format, show))
+                            logger.warning("SS: Using {0} season format for {1}".format(
+                                season_format, show))
 
                             if season_format == "xxyy":
                                 # If this is a split season then get the dates
-                                split_dates_match = re.search(r'(?P<month>\d{1,2}),(?P<day>\d{1,2})', file_contents, re.IGNORECASE)
+                                split_dates_match = re.search(
+                                    r'(?P<month>\d{1,2}),(?P<day>\d{1,2})', file_contents, re.IGNORECASE)
                                 if split_dates_match:
                                     split_month = int(split_dates_match.group('month'))
                                     split_day = int(split_dates_match.group('day'))
@@ -209,7 +220,7 @@ def Scan(path, files, mediaList, subdirs):
                     # The year must be included for seasons that run over a year boundary
                     # Issue #37: Episode numbers made after the year 2022 overrun the 32-bit unsigned
                     #    integer. Use a function to create a 9-character hash for years 2022 and up
-                    ep = NumberEpisode(year,month,day,abs(hash(file)),additional_metadata_subepisode)
+                    ep = generate_episode_hash(year, month, day, abs(hash(file_name)), additional_metadata_sub_episode)
                     tv_show = Media.Episode(show, season, ep, title, int(year))
                     tv_show.released_at = '%s-%02d-%02d' % (year, month, day)
                     tv_show.parts.append(clean_files[file_name])
@@ -217,22 +228,10 @@ def Scan(path, files, mediaList, subdirs):
                     break
                 else:
                     logger.warning("SS: No match found for {0}".format(file_name))
-    elif len(paths) >= 2:
-        logger.warning("We are in | len(paths) >= 2")
-        # Here we assume that it is in this format: League/Season/Event
+    elif library_name_as_league:
+        logger.warning("Library Name is League")
+        # Here we assume that it is in this format: League(Library)/Season(Show)/Event(Season)
         logger.warning("Lex: path | {}".format(path))
-        show = show_name_as_year
-        logger.warning("Lex: Show | {}".format(show))
-        season = season_name_as_event
-        logger.warning("Lex: Season | {}".format(season))
-        # Look for the season in obvious ways or fail
-        # match = re.match(r'Season (\d{4})', paths[1])
-        # if match:
-        #     season = match.group(1)
-        # else:
-        #     match = re.match(r'(\d{4})', paths[1])
-        #     if match:
-        #         season = match.group(1)
 
         # Look for ALL the information we need in the filename
         # - but trust what we have already found
@@ -260,10 +259,10 @@ def Scan(path, files, mediaList, subdirs):
                     # The year must be included for seasons that run over a year boundary
                     # Issue #37: Episode numbers made after the year 2022 overrun the 32-bit unsigned
                     #    integer. Use a function to create a 9-character hash for years 2022 and up
-                    ep = NumberEpisode(year,month,day,abs(hash(file)),additional_metadata_subepisode)
-                    tv_show = Media.Episode(show, season, ep, title, int(year))
-                    # Use month as Season for testing
-                    tv_show = Media.Episode(show, month, ep, title, int(year))
+                    ep = generate_episode_hash(year, month, day, abs(hash(file_name)), additional_metadata_sub_episode)
+                    # TODO: Change how the month is used for the season here as this will not work,
+                    #  for leagues with more than one event per month.
+                    tv_show = Media.Episode(show_name_as_year, month, ep, title, int(year))
                     tv_show.released_at = '%s-%02d-%02d' % (year, month, day)
                     tv_show.parts.append(clean_files[file_name])
                     mediaList.append(tv_show)
@@ -278,11 +277,10 @@ def Scan(path, files, mediaList, subdirs):
     Stack.Scan(path, files, mediaList, subdirs)
 
 
-import sys
-
 if __name__ == '__main__':
-    path = sys.argv[1]
-    files = [os.path.join(path, file) for file in os.listdir(path)]
-    media = []
-    Scan(path[1:], files, media, [])
-    logging.info("SS: media |", media, "|")
+    import sys
+    cmd_path = sys.argv[1]
+    cmd_files = [os.path.join(cmd_path, cmd_file) for cmd_file in os.listdir(cmd_path)]
+    cmd_media = []
+    Scan(cmd_path[1:], cmd_files, cmd_media, [])
+    logging.info("SS: media |", cmd_media, "|")
